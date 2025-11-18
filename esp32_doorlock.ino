@@ -3,7 +3,6 @@
 
 const char* ssid = "Venom Insight";
 const char* password = "saumyasish";
-
 // FREE PUBLIC MQTT BROKER
 const char* mqtt_server = "broker.hivemq.com";
 
@@ -13,11 +12,80 @@ PubSubClient client(espClient);
 // MQTT Topics
 const char* subTopic = "soumyasish/door";      // Subscriber topic
 
+// ================= PIN DEFINITIONS =================
+// Relay Pins (Connect to IN1 and IN2 on Relay Module)
+const int relay1 = 18; 
+const int relay2 = 19;
+// LED PIN
+const int green = 2;
+const int red = 16;
+
+
+// ================= STATE TRACKING =================
+// We start as "unknown" so the first command always works to sync the system
+String currentDoorState = "unknown";
+
+
+
+//blink led
+void blinkled(){
+  int n = 4;
+  while(n){
+    digitalWrite(17, HIGH);
+    delay(500);
+    digitalWrite(17, LOW);
+    delay(500);
+    n=n-1;
+  }  
+}
+
+
+// ================= MOTOR CONTROL FUNCTION =================
+//function to open door
+void opendoor(){
+  //Rotate Clockwise (IN1 ON, IN2 OFF)
+  digitalWrite(relay1, LOW);  // Relay 1 ON
+  digitalWrite(relay2, HIGH); // Relay 2 OFF
+  //delay(4000); // Run for 2 seconds
+
+  int n = 4;
+  while(n){
+    digitalWrite(green, HIGH);
+    delay(500);
+    digitalWrite(green, LOW);
+    delay(500);
+    n=n-1;
+  }
+}
+
+//function to close door
+void closedoor(){
+  //Rotate Counter-Clockwise (IN1 OFF, IN2 ON)
+  digitalWrite(relay1, HIGH); // Relay 1 OFF
+  digitalWrite(relay2, LOW);  // Relay 2 ON
+  //delay(4000); // Run for 2 seconds
+  int n = 4;
+  while(n){
+    digitalWrite(red, HIGH);
+    delay(500);
+    digitalWrite(red, LOW);
+    delay(500);
+    n=n-1;
+  }
+}
+
+
+void doorstop(){
+  //Stop motor
+  digitalWrite(relay1, HIGH); 
+  digitalWrite(relay2, HIGH); 
+}
+
 
 
 // ====================== SUBSCRIBER CALLBACK =======================
 void callback(char* topic, byte* message, unsigned int length) {
-  Serial.print("Message received: ");
+  //Serial.print("Message received: ");
   //Serial.print(topic);
 
 
@@ -29,19 +97,43 @@ void callback(char* topic, byte* message, unsigned int length) {
   // CRITICAL: Remove any hidden whitespace/newlines
   msg.trim(); 
   
-  Serial.println(msg);
+  //Serial.println(msg);
 
   // Logic: If Open, Turn PIN 2 ON and PIN 16 OFF
-  if (msg == "open") {
-    Serial.println("Status: Door OPEN");
-    digitalWrite(2, HIGH);
-    digitalWrite(16, LOW);
+  if (msg == "open"){
+    // CHECK: Is it already open?
+    if (currentDoorState == "open") {
+      Serial.println("Status: Door already OPENED");
+    } 
+    else {
+      // It is not open, so let's open it
+      Serial.println("Status: Door OPENING");
+      digitalWrite(red, LOW);
+      opendoor();
+      digitalWrite(green, HIGH);
+      doorstop();
+      //Update State Variable
+      currentDoorState = "open";
+      Serial.println("Status: Door OPENED");
+    }
   }
   // Logic: If Close, Turn PIN 2 OFF and PIN 16 ON
   else if (msg == "close") {
-    Serial.println("Status: Door CLOSED");
-    digitalWrite(2, LOW);
-    digitalWrite(16, HIGH);
+    // CHECK: Is it already closed?
+    if (currentDoorState == "close") {
+      Serial.println("Status: Door already CLOSED");
+    } 
+    else {
+      // It is not closed, so let's close it
+      Serial.println("Status: Door CLOSING");
+      digitalWrite(green, LOW);
+      closedoor();
+      digitalWrite(red, HIGH);
+      doorstop();
+      //Update State Variable
+      currentDoorState = "close";
+      Serial.println("Status: Door CLOSED");
+    }
   }
 }
 
@@ -93,12 +185,19 @@ void setup() {
   Serial.begin(115200);
   
   // Pin Setup
-  pinMode(2, OUTPUT);
-  pinMode(16, OUTPUT);
-  
-  // Initialize LEDs to OFF
-  digitalWrite(2, LOW);
-  digitalWrite(16, LOW);
+  pinMode(green, OUTPUT);
+  pinMode(red, OUTPUT);
+  pinMode(relay1, OUTPUT);
+  pinMode(relay2, OUTPUT);
+  pinMode(17, OUTPUT);    //TESTING
+
+
+  // Initialize Relays, LEDs to OFF
+  digitalWrite(relay1, HIGH);
+  digitalWrite(relay2, HIGH);
+  digitalWrite(green, LOW);
+  digitalWrite(red, LOW);
+  digitalWrite(17,LOW);   //TESTING
 
   setup_wifi();
   client.setServer(mqtt_server, 1883);
