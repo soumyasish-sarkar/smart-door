@@ -93,12 +93,12 @@ void setup() {
   Serial.begin(115200);
   
   // Pin Setup
-  pinMode(ledOpen, OUTPUT);
-  pinMode(ledClose, OUTPUT);
+  pinMode(2, OUTPUT);
+  pinMode(16, OUTPUT);
   
   // Initialize LEDs to OFF
-  digitalWrite(ledOpen, LOW);
-  digitalWrite(ledClose, LOW);
+  digitalWrite(2, LOW);
+  digitalWrite(16, LOW);
 
   setup_wifi();
   client.setServer(mqtt_server, 1883);
