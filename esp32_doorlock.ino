@@ -1,6 +1,6 @@
 #include <WiFi.h>
 #include <PubSubClient.h>
-#include <Preferences.h> // LIBRARY FOR SAVING DATA TO FLASH MEMORY
+#include <Preferences.h>  // LIBRARY FOR SAVING DATA TO FLASH MEMORY
 #include <SPI.h>
 #include <MFRC522.h>
 
@@ -13,40 +13,43 @@ const char* mqtt_server = "broker.hivemq.com";
 
 // ================= PIN DEFINITIONS =================
 // Relay Pins (Connect to IN1 and IN2 on Relay Module)
-const int relay1 = 18; 
+const int relay1 = 18;
 const int relay2 = 19;
 // LED PIN
 const int green = 2;
 const int red = 16;
 
 //RC522 pins
-#define RST_PIN   27
-#define SS_PIN    5
-#define SCK_PIN   14
-#define MISO_PIN  12
-#define MOSI_PIN  13
+#define RST_PIN 27
+#define SS_PIN 5
+#define SCK_PIN 14
+#define MISO_PIN 12
+#define MOSI_PIN 13
 
 
 
 WiFiClient espClient;
 PubSubClient client(espClient);
-Preferences preferences; // Create preferences object
+Preferences preferences;  // Create preferences object
 
 MFRC522 rfid(SS_PIN, RST_PIN);
 MFRC522::MIFARE_Key key;
 
 // MQTT Topics
-const char* subTopic = "soumyasish/door";      // Subscriber topic
+const char* subTopic = "soumyasish/door/operations";  // Subscriber to door operation
+const char* subTopic2 = "soumyasish/door/ipcam";      //subscribed to the webcam operation from laptop
+const char* pubTopic = "soumyasish/door/logs";
 
 // ===== Pre-saved Allowed IDs (from Block 2) =====
 String allowedList[] = {
   "CSB22054",
-  "CSB22082"
+  "CSB22082",
+  "soumyasish"
 };
 int allowedCount = sizeof(allowedList) / sizeof(allowedList[0]);
 
 // Convert byte array to ASCII
-String byteArrayToAscii(byte *buffer, byte bufferSize) {
+String byteArrayToAscii(byte* buffer, byte bufferSize) {
   String s = "";
   for (byte i = 0; i < bufferSize; i++) {
     char c = (char)buffer[i];
@@ -80,51 +83,51 @@ String readBlock(byte blockAddr) {
 // ================= STATE TRACKING =================
 // We will load this from memory in setup()
 String currentDoorState = "";
- 
+
 
 
 // ================= MOTOR CONTROL FUNCTION =================
 //function to open door
-void opendoor(){
+void opendoor() {
   //Rotate Clockwise (IN1 ON, IN2 OFF)
-  digitalWrite(relay1, LOW);  // Relay 1 ON
-  digitalWrite(relay2, HIGH); // Relay 2 OFF
+  digitalWrite(relay1, LOW);   // Relay 1 ON
+  digitalWrite(relay2, HIGH);  // Relay 2 OFF
   //delay(4000); // Run for 2 seconds
 
   //blink green LED while opening
   int n = 4;
-  while(n){
+  while (n) {
     digitalWrite(green, HIGH);
     delay(500);
     digitalWrite(green, LOW);
     delay(500);
-    n=n-1;
+    n = n - 1;
   }
 }
 
 //function to close door
-void closedoor(){
+void closedoor() {
   //Rotate Counter-Clockwise (IN1 OFF, IN2 ON)
-  digitalWrite(relay1, HIGH); // Relay 1 OFF
-  digitalWrite(relay2, LOW);  // Relay 2 ON
+  digitalWrite(relay1, HIGH);  // Relay 1 OFF
+  digitalWrite(relay2, LOW);   // Relay 2 ON
   //delay(4000); // Run for 2 seconds
 
   //Blink Red LED while closing
   int n = 4;
-  while(n){
+  while (n) {
     digitalWrite(red, HIGH);
     delay(500);
     digitalWrite(red, LOW);
     delay(500);
-    n=n-1;
+    n = n - 1;
   }
 }
 
 
-void doorstop(){
+void doorstop() {
   //Stop motor
-  digitalWrite(relay1, HIGH); 
-  digitalWrite(relay2, HIGH); 
+  digitalWrite(relay1, HIGH);
+  digitalWrite(relay2, HIGH);
 }
 
 
@@ -139,21 +142,28 @@ void callback(char* topic, byte* message, unsigned int length) {
   for (int i = 0; i < length; i++) {
     msg += (char)message[i];
   }
-  
+
   // CRITICAL: Remove any hidden whitespace/newlines
-  msg.trim(); 
-  
+  msg.trim();
+
   //Serial.println(msg);
 
+
   // Logic: If Open, Turn PIN 2 ON and PIN 16 OFF
-  if (msg == "open"){
+  if (msg == "open") {
     // CHECK: Is it already open?
     if (currentDoorState == "open") {
       Serial.println("Status: Door already OPENED");
-    } 
-    else {
+      client.publish(pubTopic, "Status: Door already OPENED");
+    } else {
       // It is not open, so let's open it
-      Serial.println("Status: Door OPENING");
+      if (String(topic) == subTopic) {
+        Serial.println("Status: Door OPENING --MQTT");
+        client.publish(pubTopic, "Status: Door OPENING --MQTT");
+      } else if (String(topic) == subTopic2) {
+        Serial.println("Status: Door OPENING --WebCam");
+        client.publish(pubTopic, "Status: Door OPENING --WebCam");
+      }
       digitalWrite(red, LOW);
       opendoor();
       digitalWrite(green, HIGH);
@@ -162,6 +172,7 @@ void callback(char* topic, byte* message, unsigned int length) {
       currentDoorState = "open";
       preferences.putString("state", "open");
       Serial.println("Status: Door OPENED");
+      client.publish(pubTopic, "Status: Door OPENED");
     }
   }
   // Logic: If Close, Turn PIN 2 OFF and PIN 16 ON
@@ -169,10 +180,16 @@ void callback(char* topic, byte* message, unsigned int length) {
     // CHECK: Is it already closed?
     if (currentDoorState == "close") {
       Serial.println("Status: Door already CLOSED");
-    } 
-    else {
+      client.publish(pubTopic, "Status: Door already CLOSED");
+    } else {
       // It is not closed, so let's close it
-      Serial.println("Status: Door CLOSING");
+      if (String(topic) == subTopic) {
+        Serial.println("Status: Door CLOSING --MQTT");
+        client.publish(pubTopic, "Status: Door CLOSING --MQTT");
+      } else if (String(topic) == subTopic2) {
+        Serial.println("Status: Door CLOSING --WebCam");
+        client.publish(pubTopic, "Status: Door CLOSING --WebCam");
+      }
       digitalWrite(green, LOW);
       closedoor();
       digitalWrite(red, HIGH);
@@ -181,6 +198,7 @@ void callback(char* topic, byte* message, unsigned int length) {
       currentDoorState = "close";
       preferences.putString("state", "close");
       Serial.println("Status: Door CLOSED");
+      client.publish(pubTopic, "Status: Door CLOSED");
     }
   }
 }
@@ -210,7 +228,7 @@ void reconnect() {
   // Loop until we're reconnected
   while (!client.connected()) {
     Serial.print("Attempting MQTT connection... ");
-    
+
     // Create a random client ID to avoid conflicts on public broker
     String clientId = "ESP32Client-";
     clientId += String(random(0xffff), HEX);
@@ -219,6 +237,10 @@ void reconnect() {
       Serial.println("connected");
       client.subscribe(subTopic);
       Serial.println("Subscribed to: " + String(subTopic));
+      client.subscribe(subTopic2);
+      Serial.println("Subscribed to: " + String(subTopic2));
+      // Publish boot message
+      client.publish(pubTopic, "ESP32 Connected");
     } else {
       Serial.print("failed, rc=");
       Serial.print(client.state());
@@ -235,7 +257,7 @@ void setup() {
   SPI.begin(SCK_PIN, MISO_PIN, MOSI_PIN, SS_PIN);
   rfid.PCD_Init();
   delay(200);
-  
+
   // Pin Setup
   pinMode(green, OUTPUT);
   pinMode(red, OUTPUT);
@@ -251,15 +273,16 @@ void setup() {
   //Memory load
   // Open a storage namespace called "door_app"
   preferences.begin("door_app", false);
-  
+
   // Get the last known state. If empty (first time ever), default to "close".
   currentDoorState = preferences.getString("state", "close");
-  
+
   Serial.print("Status: SYSTEM REBOOTED. Previous State Loaded -> ");
   Serial.println(currentDoorState);
 
+
   // Restore LED status based on memory
-  if(currentDoorState == "open"){
+  if (currentDoorState == "open") {
     digitalWrite(green, HIGH);
     digitalWrite(red, LOW);
   } else {
@@ -281,10 +304,11 @@ void loop() {
   if (!client.connected()) {
     reconnect();
   }
-  client.loop(); // This must run frequently to listen for messages
+  client.loop();  // This must run frequently to listen for messages
+
 
   // ================= RFID CHECK =================
-if (rfid.PICC_IsNewCardPresent() && rfid.PICC_ReadCardSerial()) {
+  if (rfid.PICC_IsNewCardPresent() && rfid.PICC_ReadCardSerial()) {
 
     String block2 = readBlock(2);
 
@@ -299,12 +323,15 @@ if (rfid.PICC_IsNewCardPresent() && rfid.PICC_ReadCardSerial()) {
     if (match) {
 
       Serial.printf("\nAuthorized CARD Access: %s\n", block2.c_str());
+      String msg = "\nAuthorized CARD Access: " + block2;
+      client.publish(pubTopic, msg.c_str());
 
       // ====== RFID TOGGLE LOGIC ======
       if (currentDoorState == "open") {
 
         // CLOSE DOOR
-        Serial.println("Status: Door CLOSING");
+        Serial.println("Status: Door CLOSING --RFID");
+        client.publish(pubTopic, "Status: Door CLOSING --RFID");
         digitalWrite(green, LOW);
         closedoor();
         digitalWrite(red, HIGH);
@@ -313,11 +340,12 @@ if (rfid.PICC_IsNewCardPresent() && rfid.PICC_ReadCardSerial()) {
         currentDoorState = "close";
         preferences.putString("state", "close");
         Serial.println("Status: Door CLOSED");
-      }
-      else if (currentDoorState == "close"){
+        client.publish(pubTopic, "Status: Door CLOSED");
+      } else if (currentDoorState == "close") {
 
         // OPEN DOOR
-        Serial.println("Status: Door OPENING");
+        Serial.println("Status: Door OPENING --RFID");
+        client.publish(pubTopic, "Status: Door OPENING --RFID");
         digitalWrite(red, LOW);
         opendoor();
         digitalWrite(green, HIGH);
@@ -326,23 +354,18 @@ if (rfid.PICC_IsNewCardPresent() && rfid.PICC_ReadCardSerial()) {
         currentDoorState = "open";
         preferences.putString("state", "open");
         Serial.println("Status: Door OPENED");
-      }
-      else{
+        client.publish(pubTopic, "Status: Door OPENED");
+      } else {
         Serial.println("Status: INVALID SIGNAL");
+        client.publish(pubTopic, "Status: INVALID SIGNAL");
       }
-      // ===================================
-    } 
-    else {
+    } else {
       Serial.printf("\nUnauthorized CARD Access: %s\n", block2.c_str());
+      String msg2 = "\nUnauthorized CARD Access: " + block2;
+      client.publish(pubTopic, msg2.c_str());
     }
 
     rfid.PICC_HaltA();
     rfid.PCD_StopCrypto1();
-}
-
-
-
-  
-  
-  // DO NOT ADD LONG DELAYS HERE
+  }
 }
