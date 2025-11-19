@@ -1,16 +1,15 @@
 #include <WiFi.h>
 #include <PubSubClient.h>
+#include <Preferences.h> // LIBRARY FOR SAVING DATA TO FLASH MEMORY
+#include <SPI.h>
+#include <MFRC522.h>
 
 const char* ssid = "Venom Insight";
 const char* password = "saumyasish";
+
 // FREE PUBLIC MQTT BROKER
 const char* mqtt_server = "broker.hivemq.com";
 
-WiFiClient espClient;
-PubSubClient client(espClient);
-
-// MQTT Topics
-const char* subTopic = "soumyasish/door";      // Subscriber topic
 
 // ================= PIN DEFINITIONS =================
 // Relay Pins (Connect to IN1 and IN2 on Relay Module)
@@ -20,24 +19,68 @@ const int relay2 = 19;
 const int green = 2;
 const int red = 16;
 
+//RC522 pins
+#define RST_PIN   27
+#define SS_PIN    5
+#define SCK_PIN   14
+#define MISO_PIN  12
+#define MOSI_PIN  13
+
+
+
+WiFiClient espClient;
+PubSubClient client(espClient);
+Preferences preferences; // Create preferences object
+
+MFRC522 rfid(SS_PIN, RST_PIN);
+MFRC522::MIFARE_Key key;
+
+// MQTT Topics
+const char* subTopic = "soumyasish/door";      // Subscriber topic
+
+// ===== Pre-saved Allowed IDs (from Block 2) =====
+String allowedList[] = {
+  "CSB22054",
+  "CSB22082"
+};
+int allowedCount = sizeof(allowedList) / sizeof(allowedList[0]);
+
+// Convert byte array to ASCII
+String byteArrayToAscii(byte *buffer, byte bufferSize) {
+  String s = "";
+  for (byte i = 0; i < bufferSize; i++) {
+    char c = (char)buffer[i];
+    if (c >= 32 && c <= 126) s += c;
+  }
+  return s;
+}
+
+// Read a single block
+String readBlock(byte blockAddr) {
+  byte buffer[18];
+  byte size = sizeof(buffer);
+
+  MFRC522::StatusCode status;
+
+  // Authenticate
+  status = rfid.PCD_Authenticate(MFRC522::PICC_CMD_MF_AUTH_KEY_A, blockAddr, &key, &(rfid.uid));
+  if (status != MFRC522::STATUS_OK) return "";
+
+  // Read
+  status = rfid.MIFARE_Read(blockAddr, buffer, &size);
+  if (status != MFRC522::STATUS_OK) return "";
+
+  return byteArrayToAscii(buffer, 16);
+}
+
+
+
+
 
 // ================= STATE TRACKING =================
-// We start as "unknown" so the first command always works to sync the system
-String currentDoorState = "unknown";
-
-
-
-//blink led
-void blinkled(){
-  int n = 4;
-  while(n){
-    digitalWrite(17, HIGH);
-    delay(500);
-    digitalWrite(17, LOW);
-    delay(500);
-    n=n-1;
-  }  
-}
+// We will load this from memory in setup()
+String currentDoorState = "";
+ 
 
 
 // ================= MOTOR CONTROL FUNCTION =================
@@ -48,6 +91,7 @@ void opendoor(){
   digitalWrite(relay2, HIGH); // Relay 2 OFF
   //delay(4000); // Run for 2 seconds
 
+  //blink green LED while opening
   int n = 4;
   while(n){
     digitalWrite(green, HIGH);
@@ -64,6 +108,8 @@ void closedoor(){
   digitalWrite(relay1, HIGH); // Relay 1 OFF
   digitalWrite(relay2, LOW);  // Relay 2 ON
   //delay(4000); // Run for 2 seconds
+
+  //Blink Red LED while closing
   int n = 4;
   while(n){
     digitalWrite(red, HIGH);
@@ -114,6 +160,7 @@ void callback(char* topic, byte* message, unsigned int length) {
       doorstop();
       //Update State Variable
       currentDoorState = "open";
+      preferences.putString("state", "open");
       Serial.println("Status: Door OPENED");
     }
   }
@@ -132,6 +179,7 @@ void callback(char* topic, byte* message, unsigned int length) {
       doorstop();
       //Update State Variable
       currentDoorState = "close";
+      preferences.putString("state", "close");
       Serial.println("Status: Door CLOSED");
     }
   }
@@ -183,25 +231,49 @@ void reconnect() {
 // ====================== SETUP =======================
 void setup() {
   Serial.begin(115200);
+
+  SPI.begin(SCK_PIN, MISO_PIN, MOSI_PIN, SS_PIN);
+  rfid.PCD_Init();
+  delay(200);
   
   // Pin Setup
   pinMode(green, OUTPUT);
   pinMode(red, OUTPUT);
   pinMode(relay1, OUTPUT);
   pinMode(relay2, OUTPUT);
-  pinMode(17, OUTPUT);    //TESTING
 
 
   // Initialize Relays, LEDs to OFF
   digitalWrite(relay1, HIGH);
   digitalWrite(relay2, HIGH);
-  digitalWrite(green, LOW);
-  digitalWrite(red, LOW);
-  digitalWrite(17,LOW);   //TESTING
+
+
+  //Memory load
+  // Open a storage namespace called "door_app"
+  preferences.begin("door_app", false);
+  
+  // Get the last known state. If empty (first time ever), default to "close".
+  currentDoorState = preferences.getString("state", "close");
+  
+  Serial.print("Status: SYSTEM REBOOTED. Previous State Loaded -> ");
+  Serial.println(currentDoorState);
+
+  // Restore LED status based on memory
+  if(currentDoorState == "open"){
+    digitalWrite(green, HIGH);
+    digitalWrite(red, LOW);
+  } else {
+    digitalWrite(green, LOW);
+    digitalWrite(red, HIGH);
+  }
 
   setup_wifi();
   client.setServer(mqtt_server, 1883);
   client.setCallback(callback);
+
+  for (byte i = 0; i < 6; i++) key.keyByte[i] = 0xFF;
+
+  //Serial.println("RC522 Ready. Tap card...");
 }
 
 // ====================== MAIN LOOP =======================
@@ -210,6 +282,67 @@ void loop() {
     reconnect();
   }
   client.loop(); // This must run frequently to listen for messages
+
+  // ================= RFID CHECK =================
+if (rfid.PICC_IsNewCardPresent() && rfid.PICC_ReadCardSerial()) {
+
+    String block2 = readBlock(2);
+
+    bool match = false;
+    for (int i = 0; i < allowedCount; i++) {
+      if (block2.indexOf(allowedList[i]) >= 0) {
+        match = true;
+        break;
+      }
+    }
+
+    if (match) {
+
+      Serial.printf("\nAuthorized CARD Access: %s\n", block2.c_str());
+
+      // ====== RFID TOGGLE LOGIC ======
+      if (currentDoorState == "open") {
+
+        // CLOSE DOOR
+        Serial.println("Status: Door CLOSING");
+        digitalWrite(green, LOW);
+        closedoor();
+        digitalWrite(red, HIGH);
+        doorstop();
+
+        currentDoorState = "close";
+        preferences.putString("state", "close");
+        Serial.println("Status: Door CLOSED");
+      }
+      else if (currentDoorState == "close"){
+
+        // OPEN DOOR
+        Serial.println("Status: Door OPENING");
+        digitalWrite(red, LOW);
+        opendoor();
+        digitalWrite(green, HIGH);
+        doorstop();
+
+        currentDoorState = "open";
+        preferences.putString("state", "open");
+        Serial.println("Status: Door OPENED");
+      }
+      else{
+        Serial.println("Status: INVALID SIGNAL");
+      }
+      // ===================================
+    } 
+    else {
+      Serial.printf("\nUnauthorized CARD Access: %s\n", block2.c_str());
+    }
+
+    rfid.PICC_HaltA();
+    rfid.PCD_StopCrypto1();
+}
+
+
+
+  
   
   // DO NOT ADD LONG DELAYS HERE
 }
