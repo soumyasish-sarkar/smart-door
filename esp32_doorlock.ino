@@ -7,9 +7,16 @@
 const char* ssid = "Venom Insight";
 const char* password = "saumyasish";
 
+
+
 // FREE PUBLIC MQTT BROKER
 const char* mqtt_server = "broker.hivemq.com";
 
+// ====== ADDED: MQTT AUTH CREDENTIALS & MESSAGE TOKEN ======
+const char* mqtt_user = "smartdoor";  // <-- set this
+const char* mqtt_password = "door";   // <-- set this
+// NOTE: token removed as per request - MQTT will rely on broker username/password
+// =========================================================
 
 // ================= PIN DEFINITIONS =================
 // Relay Pins (Connect to IN1 and IN2 on Relay Module)
@@ -26,6 +33,8 @@ const int red = 16;
 #define MISO_PIN 12
 #define MOSI_PIN 13
 
+unsigned long ignoreCommandsUntil = 0;
+
 
 
 WiFiClient espClient;
@@ -39,6 +48,13 @@ MFRC522::MIFARE_Key key;
 const char* subTopic = "soumyasish/door/operations";  // Subscriber to door operation
 const char* subTopic2 = "soumyasish/door/ipcam";      //subscribed to the webcam operation from laptop
 const char* pubTopic = "soumyasish/door/logs";
+
+// ====== ADDED: secure publish helper (no token) ======
+void securePublish(const char* topic, const char* message) {
+  // Previously this wrapped messages with a token. Token auth removed:
+  client.publish(topic, message);
+}
+// ==========================================================
 
 // ===== Pre-saved Allowed IDs (from Block 2) =====
 String allowedList[] = {
@@ -137,6 +153,12 @@ void callback(char* topic, byte* message, unsigned int length) {
   //Serial.print("Message received: ");
   //Serial.print(topic);
 
+  // ========= Ignore MQTT commands for first 5 seconds =========
+
+  if (millis() < ignoreCommandsUntil) {
+    return;
+  }
+
 
   String msg = "";
   for (int i = 0; i < length; i++) {
@@ -146,6 +168,11 @@ void callback(char* topic, byte* message, unsigned int length) {
   // CRITICAL: Remove any hidden whitespace/newlines
   msg.trim();
 
+  // ====== REMOVED: Message-level authorization check ======
+  // Token-based incoming message check removed. Broker-level auth (username/password)
+  // is used now. Incoming payloads are expected to be plain commands like "open" or "close".
+  // ======================================================
+
   //Serial.println(msg);
 
 
@@ -154,15 +181,15 @@ void callback(char* topic, byte* message, unsigned int length) {
     // CHECK: Is it already open?
     if (currentDoorState == "open") {
       Serial.println("Status: Door already OPENED");
-      client.publish(pubTopic, "Status: Door already OPENED");
+      securePublish(pubTopic, "Status: Door already OPENED");
     } else {
       // It is not open, so let's open it
       if (String(topic) == subTopic) {
         Serial.println("Status: Door OPENING --MQTT");
-        client.publish(pubTopic, "Status: Door OPENING --MQTT");
+        securePublish(pubTopic, "Status: Door OPENING --MQTT");
       } else if (String(topic) == subTopic2) {
         Serial.println("Status: Door OPENING --WebCam");
-        client.publish(pubTopic, "Status: Door OPENING --WebCam");
+        securePublish(pubTopic, "Status: Door OPENING --WebCam");
       }
       digitalWrite(red, LOW);
       opendoor();
@@ -172,7 +199,7 @@ void callback(char* topic, byte* message, unsigned int length) {
       currentDoorState = "open";
       preferences.putString("state", "open");
       Serial.println("Status: Door OPENED");
-      client.publish(pubTopic, "Status: Door OPENED");
+      securePublish(pubTopic, "Status: Door OPENED");
     }
   }
   // Logic: If Close, Turn PIN 2 OFF and PIN 16 ON
@@ -180,15 +207,15 @@ void callback(char* topic, byte* message, unsigned int length) {
     // CHECK: Is it already closed?
     if (currentDoorState == "close") {
       Serial.println("Status: Door already CLOSED");
-      client.publish(pubTopic, "Status: Door already CLOSED");
+      securePublish(pubTopic, "Status: Door already CLOSED");
     } else {
       // It is not closed, so let's close it
       if (String(topic) == subTopic) {
         Serial.println("Status: Door CLOSING --MQTT");
-        client.publish(pubTopic, "Status: Door CLOSING --MQTT");
+        securePublish(pubTopic, "Status: Door CLOSING --MQTT");
       } else if (String(topic) == subTopic2) {
         Serial.println("Status: Door CLOSING --WebCam");
-        client.publish(pubTopic, "Status: Door CLOSING --WebCam");
+        securePublish(pubTopic, "Status: Door CLOSING --WebCam");
       }
       digitalWrite(green, LOW);
       closedoor();
@@ -198,7 +225,7 @@ void callback(char* topic, byte* message, unsigned int length) {
       currentDoorState = "close";
       preferences.putString("state", "close");
       Serial.println("Status: Door CLOSED");
-      client.publish(pubTopic, "Status: Door CLOSED");
+      securePublish(pubTopic, "Status: Door CLOSED");
     }
   }
 }
@@ -227,20 +254,23 @@ void setup_wifi() {
 void reconnect() {
   // Loop until we're reconnected
   while (!client.connected()) {
+    if (millis() < ignoreCommandsUntil) {
+      return;
+    }
     Serial.print("Attempting MQTT connection... ");
 
     // Create a random client ID to avoid conflicts on public broker
-    String clientId = "ESP32Client-";
-    clientId += String(random(0xffff), HEX);
+    String clientId = "ESP32 Door Controller";
 
-    if (client.connect(clientId.c_str())) {
+    // ====== CHANGED: use username/password for broker authentication ======
+    if (client.connect(clientId.c_str(), mqtt_user, mqtt_password)) {
       Serial.println("connected");
       client.subscribe(subTopic);
       Serial.println("Subscribed to: " + String(subTopic));
       client.subscribe(subTopic2);
       Serial.println("Subscribed to: " + String(subTopic2));
-      // Publish boot message
-      client.publish(pubTopic, "ESP32 Connected");
+      // Publish boot message (uses secure publish)
+      securePublish(pubTopic, "ESP32 Connected");
     } else {
       Serial.print("failed, rc=");
       Serial.print(client.state());
@@ -253,6 +283,9 @@ void reconnect() {
 // ====================== SETUP =======================
 void setup() {
   Serial.begin(115200);
+
+  // Block MQTT commands for first 5 seconds
+  ignoreCommandsUntil = millis() + 5000;
 
   SPI.begin(SCK_PIN, MISO_PIN, MOSI_PIN, SS_PIN);
   rfid.PCD_Init();
@@ -280,6 +313,16 @@ void setup() {
   Serial.print("Status: SYSTEM REBOOTED. Previous State Loaded -> ");
   Serial.println(currentDoorState);
 
+  //Motor always stopped at boot
+  doorstop();
+
+  // ========= ENSURE DOOR STARTS CLOSED ONLY ON FIRST-EVER USE (NOT ON CODE UPLOAD) =========
+  if (!preferences.isKey("state")) {
+    // First time ever only
+    currentDoorState = "close";
+    preferences.putString("state", "close");
+  }
+
 
   // Restore LED status based on memory
   if (currentDoorState == "open") {
@@ -289,6 +332,8 @@ void setup() {
     digitalWrite(green, LOW);
     digitalWrite(red, HIGH);
   }
+
+
 
   setup_wifi();
   client.setServer(mqtt_server, 1883);
@@ -312,6 +357,13 @@ void loop() {
 
     String block2 = readBlock(2);
 
+    if (block2.length() == 0) {
+      Serial.println("Error: Failed to read block 2 or authentication error.");
+      rfid.PICC_HaltA();
+      rfid.PCD_StopCrypto1();
+      return;  // do NOT publish any 'Authorized/Unauthorized' message
+    }
+
     bool match = false;
     for (int i = 0; i < allowedCount; i++) {
       if (block2.indexOf(allowedList[i]) >= 0) {
@@ -325,9 +377,9 @@ void loop() {
       if (currentDoorState == "open") {
 
         // CLOSE DOOR
-        Serial.printf("Status: Door CLOSING -- %s (RFID)\n",block2.c_str());
+        Serial.printf("Status: Door CLOSING -- %s (RFID)\n", block2.c_str());
         String msg = "Status: Door CLOSING -- " + block2 + " (RFID)";
-        client.publish(pubTopic, msg.c_str());
+        securePublish(pubTopic, msg.c_str());
         digitalWrite(green, LOW);
         closedoor();
         digitalWrite(red, HIGH);
@@ -336,13 +388,13 @@ void loop() {
         currentDoorState = "close";
         preferences.putString("state", "close");
         Serial.println("Status: Door CLOSED");
-        client.publish(pubTopic, "Status: Door CLOSED");
+        securePublish(pubTopic, "Status: Door CLOSED");
       } else if (currentDoorState == "close") {
 
         // OPEN DOOR
-        Serial.printf("Status: Door OPENING -- %s (RFID)\n",block2.c_str());
+        Serial.printf("Status: Door OPENING -- %s (RFID)\n", block2.c_str());
         String msg = "Status: Door OPENING -- " + block2 + " (RFID)";
-        client.publish(pubTopic, msg.c_str());
+        securePublish(pubTopic, msg.c_str());
         digitalWrite(red, LOW);
         opendoor();
         digitalWrite(green, HIGH);
@@ -351,15 +403,15 @@ void loop() {
         currentDoorState = "open";
         preferences.putString("state", "open");
         Serial.println("Status: Door OPENED");
-        client.publish(pubTopic, "Status: Door OPENED");
+        securePublish(pubTopic, "Status: Door OPENED");
       } else {
         Serial.println("Status: INVALID SIGNAL");
-        client.publish(pubTopic, "Status: INVALID SIGNAL");
+        securePublish(pubTopic, "Status: INVALID SIGNAL");
       }
     } else {
       Serial.printf("\nUnauthorized CARD Access: %s\n", block2.c_str());
-      String msg2 = "\nUnauthorized CARD Access: " + block2;
-      client.publish(pubTopic, msg2.c_str());
+      String msg2 = "Unauthorized CARD Access: " + block2;
+      securePublish(pubTopic, msg2.c_str());
     }
 
     rfid.PICC_HaltA();
