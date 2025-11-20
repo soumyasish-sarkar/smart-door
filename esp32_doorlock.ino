@@ -321,17 +321,13 @@ void loop() {
     }
 
     if (match) {
-
-      Serial.printf("\nAuthorized CARD Access: %s\n", block2.c_str());
-      String msg = "\nAuthorized CARD Access: " + block2;
-      client.publish(pubTopic, msg.c_str());
-
       // ====== RFID TOGGLE LOGIC ======
       if (currentDoorState == "open") {
 
         // CLOSE DOOR
-        Serial.println("Status: Door CLOSING --RFID");
-        client.publish(pubTopic, "Status: Door CLOSING --RFID");
+        Serial.printf("Status: Door CLOSING -- %s (RFID)\n",block2.c_str());
+        String msg = "Status: Door CLOSING -- " + block2 + " (RFID)";
+        client.publish(pubTopic, msg.c_str());
         digitalWrite(green, LOW);
         closedoor();
         digitalWrite(red, HIGH);
@@ -344,8 +340,9 @@ void loop() {
       } else if (currentDoorState == "close") {
 
         // OPEN DOOR
-        Serial.println("Status: Door OPENING --RFID");
-        client.publish(pubTopic, "Status: Door OPENING --RFID");
+        Serial.printf("Status: Door OPENING -- %s (RFID)\n",block2.c_str());
+        String msg = "Status: Door OPENING -- " + block2 + " (RFID)";
+        client.publish(pubTopic, msg.c_str());
         digitalWrite(red, LOW);
         opendoor();
         digitalWrite(green, HIGH);
