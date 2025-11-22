@@ -1,4 +1,5 @@
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
 #include <PubSubClient.h>
 #include <Preferences.h>  // LIBRARY FOR SAVING DATA TO FLASH MEMORY
 #include <SPI.h>
@@ -10,11 +11,13 @@ const char* password = "saumyasish";
 
 
 // FREE PUBLIC MQTT BROKER
-const char* mqtt_server = "broker.hivemq.com";
+// UPDATED: using HiveMQ Serverless Cloud (TLS)
+const char* mqtt_server = "a116298689b448299d3f571797d7a366.s1.eu.hivemq.cloud";
+const int mqtt_port = 8883;
 
 // ====== ADDED: MQTT AUTH CREDENTIALS & MESSAGE TOKEN ======
-const char* mqtt_user = "smartdoor";  // <-- set this
-const char* mqtt_password = "door";   // <-- set this
+const char* mqtt_user = "soumya_hivemq";  // <-- set this (HiveMQ user)
+const char* mqtt_password = "hiveMQ23";   // <-- set this (HiveMQ password)
 // NOTE: token removed as per request - MQTT will rely on broker username/password
 // =========================================================
 
@@ -22,6 +25,8 @@ const char* mqtt_password = "door";   // <-- set this
 // Relay Pins (Connect to IN1 and IN2 on Relay Module)
 const int relay1 = 18;
 const int relay2 = 19;
+const int relay3 = 21;  // Power cut relay (choose any free GPIO)
+
 // LED PIN
 const int green = 2;
 const int red = 16;
@@ -37,7 +42,8 @@ unsigned long ignoreCommandsUntil = 0;
 
 
 
-WiFiClient espClient;
+// Use secure client for HiveMQ TLS
+WiFiClientSecure espClient;
 PubSubClient client(espClient);
 Preferences preferences;  // Create preferences object
 
@@ -52,7 +58,8 @@ const char* pubTopic = "soumyasish/door/logs";
 // ====== ADDED: secure publish helper (no token) ======
 void securePublish(const char* topic, const char* message) {
   // Previously this wrapped messages with a token. Token auth removed:
-  client.publish(topic, message);
+  // ensure we DO NOT set retained flag (pass false)
+  client.publish(topic, message, false);
 }
 // ==========================================================
 
@@ -105,10 +112,17 @@ String currentDoorState = "";
 // ================= MOTOR CONTROL FUNCTION =================
 //function to open door
 void opendoor() {
+  //Cut power first
+  digitalWrite(relay3, LOW);
+  delay(50);
+
   //Rotate Clockwise (IN1 ON, IN2 OFF)
-  digitalWrite(relay1, LOW);   // Relay 1 ON
-  digitalWrite(relay2, HIGH);  // Relay 2 OFF
-  //delay(4000); // Run for 2 seconds
+  digitalWrite(relay1, HIGH);  // Relay 1 ON
+  digitalWrite(relay2, LOW);   // Relay 2 OFF
+  delay(50);
+
+  //Enable power
+  digitalWrite(relay3, HIGH);
 
   //blink green LED while opening
   int n = 4;
@@ -123,10 +137,17 @@ void opendoor() {
 
 //function to close door
 void closedoor() {
+  //Cut power first
+  digitalWrite(relay3, LOW);
+  delay(50);
+
   //Rotate Counter-Clockwise (IN1 OFF, IN2 ON)
-  digitalWrite(relay1, HIGH);  // Relay 1 OFF
-  digitalWrite(relay2, LOW);   // Relay 2 ON
-  //delay(4000); // Run for 2 seconds
+  digitalWrite(relay1, LOW);   // Relay 1 OFF
+  digitalWrite(relay2, HIGH);  // Relay 2 ON
+  delay(50);
+
+  //Enable power
+  digitalWrite(relay3, HIGH);
 
   //Blink Red LED while closing
   int n = 4;
@@ -142,8 +163,13 @@ void closedoor() {
 
 void doorstop() {
   //Stop motor
-  digitalWrite(relay1, HIGH);
-  digitalWrite(relay2, HIGH);
+  digitalWrite(relay1, LOW);
+  digitalWrite(relay2, LOW);
+
+  delay(50);
+
+  //Cut main power
+  digitalWrite(relay3, LOW);
 }
 
 
@@ -239,46 +265,52 @@ void setup_wifi() {
 
   WiFi.begin(ssid, password);
 
-  while (WiFi.status() != WL_CONNECTED) {
+  unsigned long startAttempt = millis();
+
+  while (WiFi.status() != WL_CONNECTED && millis() - startAttempt < 5000) {
     delay(500);
     Serial.print(".");
   }
 
-  Serial.println("");
-  Serial.println("WiFi connected");
-  Serial.print("IP address: ");
-  Serial.println(WiFi.localIP());
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("\nWiFi connected");
+    Serial.print("IP address: ");
+    Serial.println(WiFi.localIP());
+  } else {
+    Serial.println("\nWiFi FAILED. Running in OFFLINE MODE.");
+  }
 }
+
 
 // ====================== MQTT CONNECT =======================
 void reconnect() {
-  // Loop until we're reconnected
-  while (!client.connected()) {
-    if (millis() < ignoreCommandsUntil) {
-      return;
-    }
-    Serial.print("Attempting MQTT connection... ");
+  delay(1000);
+  static unsigned long lastAttempt = 0;
 
-    // Create a random client ID to avoid conflicts on public broker
-    String clientId = "ESP32 Door Controller";
+  // retry only every 5 seconds
+  if (millis() - lastAttempt < 5000) return;
+  lastAttempt = millis();
 
-    // ====== CHANGED: use username/password for broker authentication ======
-    if (client.connect(clientId.c_str(), mqtt_user, mqtt_password)) {
-      Serial.println("connected");
-      client.subscribe(subTopic);
-      Serial.println("Subscribed to: " + String(subTopic));
-      client.subscribe(subTopic2);
-      Serial.println("Subscribed to: " + String(subTopic2));
-      // Publish boot message (uses secure publish)
-      securePublish(pubTopic, "ESP32 Connected");
-    } else {
-      Serial.print("failed, rc=");
-      Serial.print(client.state());
-      Serial.println(" try again in 5 seconds");
-      delay(5000);
-    }
+  if (millis() < ignoreCommandsUntil) return;
+
+  Serial.print("Attempting MQTT connection... ");
+
+  String clientId = "ESP32 Door Controller";
+
+  if (client.connect(clientId.c_str(), mqtt_user, mqtt_password)) {
+    Serial.println("connected");
+    client.subscribe(subTopic);
+    Serial.println("Subscribed to: " + String(subTopic));
+    client.subscribe(subTopic2);
+    Serial.println("Subscribed to: " + String(subTopic2));
+    securePublish(pubTopic, "ESP32 Connected");
+  } else {
+    //Serial.print("failed, rc=");
+    //Serial.println(client.state());
+    Serial.print(" - Failed");
   }
 }
+
 
 // ====================== SETUP =======================
 void setup() {
@@ -296,11 +328,13 @@ void setup() {
   pinMode(red, OUTPUT);
   pinMode(relay1, OUTPUT);
   pinMode(relay2, OUTPUT);
+  pinMode(relay3, OUTPUT);
 
 
   // Initialize Relays, LEDs to OFF
-  digitalWrite(relay1, HIGH);
-  digitalWrite(relay2, HIGH);
+  digitalWrite(relay1, LOW);
+  digitalWrite(relay2, LOW);
+  digitalWrite(relay3, LOW);  // Start with power cut OFF
 
 
   //Memory load
@@ -336,7 +370,9 @@ void setup() {
 
 
   setup_wifi();
-  client.setServer(mqtt_server, 1883);
+  // for HiveMQ TLS we use secure client and set server to 8883
+  espClient.setInsecure();  // allow TLS without CA on ESP32 (NOT recommended for production)
+  client.setServer(mqtt_server, mqtt_port);
   client.setCallback(callback);
 
   for (byte i = 0; i < 6; i++) key.keyByte[i] = 0xFF;
